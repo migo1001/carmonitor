@@ -10,16 +10,21 @@ SKETCH_DIR := .
 # Build directory
 BUILD_DIR := build
 
-# Include libraries directory
+# Include libraries directory (if you have additional libraries)
 LIB_DIR := $(SKETCH_DIR)/libraries
 
+# Compiler optimization flags
+BUILD_FLAGS := --build-property build.partitions=no_ota --build-property compiler.cpp.extra_flags="-Os -w" --build-property build.config=$(SKETCH_DIR)/sdkconfig
+
 # Default target
-all: compile upload
+all: compile upload monitor
 
 # Compile the sketch
 compile:
-	@echo "Compiling the sketch..."
-	arduino-cli compile --fqbn $(FQBN) --libraries $(LIB_DIR) --build-path $(BUILD_DIR) $(SKETCH_DIR)
+	@echo "Compiling the sketch with optimization..."
+	arduino-cli compile $(BUILD_FLAGS) --fqbn $(FQBN) \
+	--libraries $(LIB_DIR) \
+	--build-path $(BUILD_DIR) $(SKETCH_DIR)
 
 # Upload the compiled sketch to the board
 upload:
