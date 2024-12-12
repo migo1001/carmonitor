@@ -76,20 +76,33 @@ bool BLEHandler::connect() {
 }
 
 void BLEHandler::notifyCallback(NimBLERemoteCharacteristic* pCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    String rawResponseArduino = String((char*)pData).substring(0, length);
-    rawResponseArduino.trim();
+
+    std::string response((char*)pData, length);
     
-    // Remove the prompt if it's at the end of the response
-    if (rawResponseArduino.endsWith(">")) {
-        rawResponseArduino.remove(rawResponseArduino.length() - 1);
+    response.erase(std::remove(response.begin(), response.end(), '\r'), response.end());
+    response.erase(std::remove(response.begin(), response.end(), '>'), response.end());
+
+    // Return if the cleaned response has no length
+    if (response.empty()) {
+        return;
     }
+
+    // Debug output for the cleaned response
+    Serial.print("Cleaned response (ASCII): ");
+    for (char c : response) {
+        if (c == '\n') {
+            Serial.print("\\n");
+        } else {
+            Serial.printf("%c", c); // Print character if printable
+        }
+        Serial.printf(" (%d)", int(c)); // Print ASCII value for each byte
+    }
+    Serial.println();
     
-    std::string rawResponseStd = rawResponseArduino.c_str();
-    
-    Serial.printf("Processed response: %s\n", rawResponseStd.c_str());
+    Serial.printf("Cleaned response (string): %s\n", response.c_str());
 
     if (elmInstance) { 
-        elmInstance->processResponse(rawResponseStd);
+        elmInstance->processResponse(response);
     }
 }
 
@@ -104,7 +117,7 @@ void BLEHandler::sendCommand(const std::string& command) {
 // Elm327 methods
 
 void Elm327::initialize() {
-    const char* initCommands[] = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6"};
+    const char* initCommands[] = {"ATZ", "ATI", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6"};
     for (const auto& command : initCommands) {
         sendCommand(command);
         delay(500); // Assuming delay is included or available
