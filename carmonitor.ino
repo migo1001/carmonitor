@@ -1,131 +1,153 @@
 #include <NimBLEDevice.h>
+#include <string>
 
 #define TARGET_DEVICE_ADDRESS "D2:E0:2F:8D:65:A3"
 #define SERVICE_UUID "e7810a71-73ae-499d-8c15-faa9aef0c3f2"
 #define CHARACTERISTIC_UUID "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f"
 
-// Initialization commands
-const char* initCommands[] = {
-    "ATZ",   // Reset
-    "ATE0",  // Disable echo
-    "ATL0",  // Disable linefeeds
-    "ATS0",  // Disable spaces
-    "ATH0",  // Disable headers
-    "ATSP6"  // Set protocol to ISO 15765-4 CAN
+class Elm327;
+
+class BLEHandler {
+public:
+    BLEHandler(Elm327* elm) : elmInstance(elm), pWriteCharacteristic(nullptr) {}
+
+    bool connect();
+    void notifyCallback(NimBLERemoteCharacteristic* pCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+    void sendCommand(const std::string& command);
+
+private:
+    NimBLEClient* client;
+    NimBLERemoteCharacteristic* pWriteCharacteristic;
+    Elm327* elmInstance; // Pointer to Elm327 instance
 };
-const size_t numInitCommands = sizeof(initCommands) / sizeof(initCommands[0]);
 
-// OBD-II Command for engine RPM
-const char* ENGINE_RPM_COMMAND = "010C\r";
+class Elm327 {
+public:
+    Elm327() : bleHandler(this) {} 
 
-// Global variable for latest RPM
-String latestRPM = "";
+    void initialize();
+    void sendCommand(const std::string& command);
+    void processResponse(const std::string& response); // expects std::string
 
-// Notification handler
-void notifyCallback(NimBLERemoteCharacteristic* pCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    String rawResponse = String((char*)pData).substring(0, length);
-    rawResponse.trim();
+    BLEHandler bleHandler; // Handles BLE communications
 
-    //Serial.printf("Raw Response: %s\n", rawResponse.c_str());
+private:
+    std::string latestRPM;
+};
 
-    // Ignore prompt ">"
-    if (rawResponse == ">") {
-        return;
+// BLEHandler methods
+
+bool BLEHandler::connect() {
+    NimBLEDevice::init("ESP32-ELM327");
+    client = NimBLEDevice::createClient();
+
+    if (!client->connect(NimBLEAddress(TARGET_DEVICE_ADDRESS, BLE_ADDR_RANDOM))) {
+        Serial.println("Failed to connect to ELM327.");
+        return false;
     }
 
-    // Skip command echo "010C"
-    if (rawResponse.startsWith("010C")) {
-        return;
+    Serial.println("Connected to ELM327.");
+
+    NimBLERemoteService* service = client->getService(SERVICE_UUID);
+    if (!service) {
+        Serial.println("Service not found.");
+        client->disconnect();
+        return false;
     }
 
-    // Parse valid RPM response
-    if (rawResponse.startsWith("410C")) {
-        if (rawResponse.length() >= 8) {  // Ensure response length is sufficient
-            int A = strtol(rawResponse.substring(4, 6).c_str(), nullptr, 16);
-            int B = strtol(rawResponse.substring(6, 8).c_str(), nullptr, 16);
-            int rpm = ((A * 256) + B) / 4;
+    pWriteCharacteristic = service->getCharacteristic(CHARACTERISTIC_UUID);
+    if (!pWriteCharacteristic || !pWriteCharacteristic->canWrite() || !pWriteCharacteristic->canNotify()) {
+        Serial.println("Characteristic not writable or notifiable.");
+        client->disconnect();
+        return false;
+    }
 
-            latestRPM = String(rpm) + " RPM";
-            Serial.printf("Engine RPM: %s\n", latestRPM.c_str());
-        } else {
-            Serial.println("Incomplete RPM response.");
-        }
-    } else {
-        Serial.println("Invalid RPM response.");
+    Serial.println("Writable and notifiable characteristic found.");
+    if (!pWriteCharacteristic->registerForNotify([this](NimBLERemoteCharacteristic* pCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+        this->notifyCallback(pCharacteristic, pData, length, isNotify);
+    })) {
+        Serial.println("Failed to register for notifications.");
+        client->disconnect();
+        return false;
+    }
+
+    Serial.println("Registered for notifications.");
+    return true;
+}
+
+void BLEHandler::notifyCallback(NimBLERemoteCharacteristic* pCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+    String rawResponseArduino = String((char*)pData).substring(0, length);
+    rawResponseArduino.trim();
+    
+    // Remove the prompt if it's at the end of the response
+    if (rawResponseArduino.endsWith(">")) {
+        rawResponseArduino.remove(rawResponseArduino.length() - 1);
+    }
+    
+    std::string rawResponseStd = rawResponseArduino.c_str();
+    
+    Serial.printf("Processed response: %s\n", rawResponseStd.c_str());
+
+    if (elmInstance) { 
+        elmInstance->processResponse(rawResponseStd);
     }
 }
 
-void sendCommand(NimBLERemoteCharacteristic* pWriteCharacteristic, const char* command) {
+void BLEHandler::sendCommand(const std::string& command) {
     if (pWriteCharacteristic) {
-        // Send the command
-        Serial.printf("Sending command: %s\n", command);
-        pWriteCharacteristic->writeValue((uint8_t*)command, strlen(command), false);
+        std::string cmdWithTerminator = command + "\r";
+        Serial.printf("Sending command: %s\n", cmdWithTerminator.c_str());
+        pWriteCharacteristic->writeValue((uint8_t*)cmdWithTerminator.c_str(), cmdWithTerminator.length(), false);
     }
 }
 
-// Initialize the ELM327 with required commands
-void initializeELM327(NimBLERemoteCharacteristic* pWriteCharacteristic) {
-    for (size_t i = 0; i < numInitCommands; ++i) {
-        sendCommand(pWriteCharacteristic, initCommands[i]);
-        delay(500); // Allow time for the device to process the command
+// Elm327 methods
+
+void Elm327::initialize() {
+    const char* initCommands[] = {"ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6"};
+    for (const auto& command : initCommands) {
+        sendCommand(command);
+        delay(500); // Assuming delay is included or available
     }
 }
+
+void Elm327::sendCommand(const std::string& command) {
+    // Delegate BLE operations to BLEHandler
+    bleHandler.sendCommand(command);
+}
+
+void Elm327::processResponse(const std::string& response) {
+    if (response.substr(0, 4) == "410C" && response.length() >= 8) {
+        int A = std::stoi(response.substr(4, 2), nullptr, 16);
+        int B = std::stoi(response.substr(6, 2), nullptr, 16);
+        int rpm = ((A * 256) + B) / 4;
+        latestRPM = std::to_string(rpm) + " RPM";
+        Serial.printf("Engine RPM: %s\n", latestRPM.c_str());
+    } else {
+        Serial.printf("Unhandled response: %s\n", response.c_str());
+    }
+}
+
+// Main setup and loop
+Elm327 elm327;
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("Starting NimBLE Client...");
-    NimBLEDevice::init("ESP32-ELM327");
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Max power
 
-    // Connect to the device
-    NimBLEClient* client = NimBLEDevice::createClient();
-    if (!client->connect(NimBLEAddress(TARGET_DEVICE_ADDRESS, BLE_ADDR_RANDOM))) {
-        Serial.println("Failed to connect to ELM327.");
-        return;
-    }
-    Serial.println("Connected to ELM327.");
-
-    // Get the characteristic for write and notifications
-    NimBLERemoteCharacteristic* pCharacteristic = client->getService(SERVICE_UUID)
-                                                    ->getCharacteristic(CHARACTERISTIC_UUID);
-
-    if (!pCharacteristic) {
-        Serial.println("Characteristic not found.");
-        client->disconnect();
+    if (!elm327.bleHandler.connect()) {
+        Serial.println("Failed to connect to BLE device.");
         return;
     }
 
-    // Check characteristic properties
-    if (!pCharacteristic->canWrite() || !pCharacteristic->canNotify()) {
-        Serial.println("Characteristic is not writable or does not support notifications.");
-        client->disconnect();
-        return;
+    elm327.initialize();
+    Serial.println("Initialization complete. Starting monitoring...");
+
+    while (true) {
+        elm327.sendCommand("010C"); // Request RPM
+        delay(1000);
     }
-    Serial.println("Found writable and notifiable characteristic.");
-
-    // Register for notifications
-    if (!pCharacteristic->registerForNotify(notifyCallback)) {
-        Serial.println("Failed to register for notifications.");
-        client->disconnect();
-        return;
-    }
-    Serial.println("Registered for notifications.");
-
-    // Initialize ELM327
-    initializeELM327(pCharacteristic);
-
-    Serial.println("Starting continuous monitoring...");
-
-    // Main loop to send RPM commands
-    while (client->isConnected()) {
-        sendCommand(pCharacteristic, ENGINE_RPM_COMMAND); // Request RPM
-        delay(1000); // Wait 1 second before sending the next command
-    }
-
-    client->disconnect();
-    Serial.println("Disconnected from ELM327.");
 }
 
 void loop() {
-    // Empty loop since the main logic is inside setup
+    // Empty because all logic is in the setup for simplicity
 }

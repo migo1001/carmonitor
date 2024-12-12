@@ -14,9 +14,10 @@ BUILD_DIR := build
 LIB_DIR := $(SKETCH_DIR)/libraries
 
 # Compiler optimization flags
-BUILD_FLAGS := --build-property compiler.cpp.extra_flags="-Os -w" \
---build-property build.partitions=upload.maximum_size=3500000 \
---build-property build.partitions=no_ota
+BUILD_FLAGS := \
+--build-property compiler.cpp.extra_flags="-Os -w" \
+--build-property upload.maximum_size=3500000 \
+--build-property build.partitions=huge_app
 
 # Default target
 all: compile upload monitor
